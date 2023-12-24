@@ -1,0 +1,61 @@
+.program pio_dshot
+.wrap_target
+    ; 
+    ; TRANSMIT PART
+    ;
+    set pindirs, 1			; set pins as output
+    pull
+
+    ; transmit 16 bits 
+    set x, 15
+tx_loop:
+    ; reference timing: DSHOT150 = 5us for 1, 2.5us for 0, bit length 6.667, frame length 106.72 (16 bits),
+    ; one bit in telemetry: 5.333 (4/5 of DSHOT bit)
+    ; so we should use the following cycles:
+    ; * DSHOT high: 30
+    ; * DSHOT low: 15
+    ; * DSHOT full frame: 15 + 15 + 10 = 40
+    ; * telemetry bit: 32
+
+    set pins, 0	[14]		        ; In reverse DSHOT, each bit starts with LOW  ...
+    out pins, 1 [14]			; ... then it either stays LOW (for 1 bit) or goes back to HIGH (for 0 bit).
+					; Note that the polarity is reversed, so the input needs to be negated before getting pushed
+    set pins, 1 [8]			; ... and then all bits go to HIGH for the last third of the bit sequence.
+    jmp x-- tx_loop
+
+    ; After sending a frame there is a 25µs break to switch the line, DMA, and timers in order
+    ; for a frame to be received. This break is independent of DSHOT frequency.
+    ;
+    ; The number of cycles to wait is sent by the host
+    pull
+    mov x, osr
+waitloop_after_tx:
+    jmp x-- waitloop_after_tx
+
+    ; 
+    ; RECEIVE PART
+    ;
+    set pindirs, 0			; set all pins as input
+
+    ;  wait until the reverse dshot frame actually starts - wait for the input pin to be zero
+     set x, 31
+waitloop_for_rx:
+     jmp !x wait_after_rx		; if the pin never switched to zero, wait and resume with TX again
+     jmp x-- c				; use this jump just to decrement
+c:   jmp pin waitloop_for_rx		; fall through if pin is zero, otherwise do it again ...
+
+start_rx:
+    ; read 21 bit of the GCR value in the rx_loop. 
+    ;
+    ; wait for ~8 cycles to be roughly at the middle of the loop
+    set x, 20 [8]
+rx_loop:
+    in pins, 1	[30]			; read from the in GPIO
+    jmp x-- rx_loop
+
+wait_after_rx:    			; let's wait a bit more before we transmit again
+    push				; push whatever we have now
+    set pindirs, 1			; set pins as output
+    set pins, 1 [2]			; set all GPIOs to high
+
+.wrap
